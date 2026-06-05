@@ -468,12 +468,11 @@ function findBestPassTarget(){
 
 function doPass(){
   const p=players[controlledIdx];
-  // Ball muss beim Spieler oder sehr nah sein
-  if(ball.owner!==p && dst(p,ball)>p.r+ball.r+50) return;
+  // Ball muss nah sein
+  if(dst(p,ball)>p.r+ball.r+60) return;
   const target=findBestPassTarget();
   if(!target) return;
 
-  ball.owner=null;
   passTarget=null;
 
   const dx=target.x-ball.x, dy=target.y-ball.y;
@@ -493,106 +492,98 @@ function doPass(){
 
 // ── Player movement ───────────────────────────────────────────
 let tackleCooldown = 0;
+let dribbleCooldown = 0; // verhindert Dauer-Nachschieben
 
 function moveControlled(){
   const {fx,fy,fw,fh}=F();
   const p=players[controlledIdx];
   const sprint=keys['ShiftLeft']||keys['ShiftRight'];
-  const spd=sprint?14:10; // sehr schnell
+  const spd=sprint?13:9;
   let dx=0,dy=0;
   if(keys['ArrowLeft']||keys['KeyA'])dx-=1;
   if(keys['ArrowRight']||keys['KeyD'])dx+=1;
   if(keys['ArrowUp']||keys['KeyW'])dy-=1;
   if(keys['ArrowDown']||keys['KeyS'])dy+=1;
   if(dx||dy){const l=Math.hypot(dx,dy);dx/=l;dy/=l;playerFaceDir={x:dx,y:dy};}
-  // Direkte Geschwindigkeit, kein Schlupf
   p.vx=dx*spd; p.vy=dy*spd;
 
-  // ── AUTO DRIBBLING: Einfach in Ball laufen = Ball mitnehmen ──
-  if(!ball.owner){
-    const bd=dst(p,ball);
-    if(bd < p.r+ball.r+10){
+  // ── DRIBBLING: Spieler schiebt Ball sanft vor sich her ──
+  // Ball.owner ist nur noch ein Marker "wer hat den Ball zuletzt berührt"
+  dribbleCooldown=Math.max(0,dribbleCooldown-1);
+  const bd=dst(p,ball);
+  if(bd < p.r+ball.r+4 && dribbleCooldown===0 && !isPowerCharging){
+    if(dx!==0||dy!==0){
+      // Schiebt Ball sanft in Laufrichtung — Ball ROLLT, wird nicht getragen
+      const pushForce=sprint?7:5;
+      ball.vx = ball.vx*0.3 + dx*pushForce;
+      ball.vy = ball.vy*0.3 + dy*pushForce;
       ball.owner=p;
-      ball.vx=0; ball.vy=0;
-    }
-  }
-  // Ball trägt sich mit Spieler mit
-  if(ball.owner===p){
-    ball.x=p.x+playerFaceDir.x*24;
-    ball.y=p.y+playerFaceDir.y*24;
-    ball.vx=0; ball.vy=0;
-    // Wenn kein Input → Ball vor dem Spieler halten
-    if(dx===0&&dy===0){
-      ball.x=p.x+playerFaceDir.x*22;
-      ball.y=p.y+playerFaceDir.y*22;
+      dribbleCooldown=8; // kurze Pause bis nächstes Anstoßen
+    } else {
+      // Stehend: Ball kurz stoppen
+      ball.vx*=0.7; ball.vy*=0.7;
+      ball.owner=p;
     }
   }
 
-  // ── GRÄTSCHEN: F oder X drücken ──
+  // ── GRÄTSCHEN: F oder X ──
   tackleCooldown=Math.max(0,tackleCooldown-1);
-  if((keys['KeyF']||keys['KeyX']) && tackleCooldown===0){
-    let nearAI=null, nearD=Infinity;
-    aiPlayers.forEach(a=>{
-      const d=dst(p,a);
-      if(d<nearD){nearD=d;nearAI=a;}
-    });
-    if(nearAI && nearD < p.r+nearAI.r+30){
-      // Ball stehlen
-      if(ball.owner===nearAI || (!ball.owner && dst(nearAI,ball)<nearAI.r+ball.r+25)){
+  if((keys['KeyF']||keys['KeyX'])&&tackleCooldown===0){
+    let nearAI=null,nearD=Infinity;
+    aiPlayers.forEach(a=>{const d=dst(p,a);if(d<nearD){nearD=d;nearAI=a;}});
+    if(nearAI&&nearD<p.r+nearAI.r+32){
+      const bdAI=dst(nearAI,ball);
+      if(bdAI<nearAI.r+ball.r+30){
+        // Ball wegschlagen
+        const kx=ball.x-nearAI.x, ky=ball.y-nearAI.y;
+        const kd=Math.hypot(kx,ky)||1;
+        ball.vx=(kx/kd)*8+playerFaceDir.x*5;
+        ball.vy=(ky/kd)*8+playerFaceDir.y*5;
         ball.owner=p;
-        ball.vx=0; ball.vy=0;
-        showMsg('💪 GRÄTSCHER! Ball gestohlen!',1200);
-      } else {
-        showMsg('⚡ Tackle!',600);
+        showMsg('💪 GRÄTSCHER!',1000);
       }
       // Gegner wegschubsen
-      const kx=nearAI.x-p.x, ky=nearAI.y-p.y;
-      const kd=Math.hypot(kx,ky)||1;
-      nearAI.vx+=(kx/kd)*9; nearAI.vy+=(ky/kd)*9;
-      tackleCooldown=35;
+      const ex=nearAI.x-p.x, ey=nearAI.y-p.y;
+      const ed=Math.hypot(ex,ey)||1;
+      nearAI.vx+=(ex/ed)*10; nearAI.vy+=(ey/ed)*10;
+      tackleCooldown=40;
     }
   }
 
-  // Mitspieler folgen schneller in Formation
+  // Mitspieler in Formation
   players.forEach((sp,i)=>{
     if(i===controlledIdx)return;
     const [xf,yo]=BLUE_FORM[i];
-    const tx=clamp(fx+fw*xf+(ball.x-fx-fw/2)*0.28, fx+sp.r, fx+fw-sp.r);
-    const ty=clamp(fy+fh/2+fh*yo+(ball.y-fy-fh/2)*0.18, fy+sp.r, fy+fh-sp.r);
-    const dx2=tx-sp.x,dy2=ty-sp.y,d=Math.hypot(dx2,dy2)||1;
-    const s=Math.min(8,d*0.22);
-    sp.vx=(dx2/d)*s; sp.vy=(dy2/d)*s;
+    const tx=clamp(fx+fw*xf+(ball.x-fx-fw/2)*0.25,fx+sp.r,fx+fw-sp.r);
+    const ty=clamp(fy+fh/2+fh*yo+(ball.y-fy-fh/2)*0.15,fy+sp.r,fy+fh-sp.r);
+    const dx2=tx-sp.x,dy2=ty-sp.y,d2=Math.hypot(dx2,dy2)||1;
+    sp.vx=(dx2/d2)*Math.min(7,d2*0.18); sp.vy=(dy2/d2)*Math.min(7,d2*0.18);
   });
 }
 
 function doShoot(pw){
   const p=players[controlledIdx];
-  if(ball.owner!==p && dst(p,ball)>p.r+ball.r+55) return;
-  ball.owner=null;
+  const bd=dst(p,ball);
+  if(bd>p.r+ball.r+60) return; // Ball muss nah sein
   const {fx,fw,gd,gh,gy}=F();
   const gx=fx+fw+gd;
-
-  // Ziel: innerhalb Torpfosten, leicht zufällig je nach Power
-  // Bei vollem Power: ganz präzise. Bei wenig Power: mehr Streuung.
-  const spread=gh*(0.55-pw*0.35); // je mehr Power, desto kleiner Streubereich
-  const targetY=H/2 + (Math.random()-0.5)*spread;
-
+  // Ziel: innerhalb Tor, Streuung abhängig von Power
+  const spread=gh*(0.5-pw*0.35);
+  const targetY=H/2+(Math.random()-0.5)*spread;
   const dx=gx-ball.x, dy=targetY-ball.y, dl=Math.hypot(dx,dy)||1;
-  // Schussrichtung: 90% Torrichtung, 10% Spielerrichtung
-  let sx=(dx/dl)*0.9+playerFaceDir.x*0.1;
-  let sy=(dy/dl)*0.9+playerFaceDir.y*0.1;
+  // Richtung: Mischung aus Torrichtung und Spieler-Blickrichtung
+  let sx=(dx/dl)*0.85+playerFaceDir.x*0.15;
+  let sy=(dy/dl)*0.85+playerFaceDir.y*0.15;
   const sl=Math.hypot(sx,sy)||1; sx/=sl; sy/=sl;
-
-  // Kraft: kurzer Druck = mittlerer Schuss, langer Druck = Vollgas
-  const minForce=14, maxForce=30;
-  const force=minForce+(maxForce-minForce)*pw;
+  // Kraft
+  const force=15+pw*20;
   ball.vx=sx*force; ball.vy=sy*force;
+  ball.owner=p;
+  dribbleCooldown=20; // kein sofortiges Dribbling nach Schuss
 
-  // Nachricht je nach Schussstärke
-  if(pw>0.8)      showMsg('💥 VOLLEY! TRAUMSCHUSS!',900);
+  if(pw>0.8)      showMsg('💥 TRAUMSCHUSS!',900);
   else if(pw>0.5) showMsg('⚽ Starker Schuss!',700);
-  else if(pw>0.2) showMsg('🦶 Schuss!',500);
-  else            showMsg('🦶 Tipp!',400);
+  else            showMsg('🦶 Schuss!',500);
 }
 
 // ── AI ────────────────────────────────────────────────────────
@@ -625,16 +616,14 @@ function updateAI(){
         ball.owner = p;
         showMsg('🧤 Torwart hält!', 1500);
       }
-      // GK has ball → throw to teammate
+      // GK fängt Ball und wirft ihn weiter
       if(ball.owner===p){
-        ball.x=p.x-24; ball.y=p.y; ball.vx=0; ball.vy=0;
-        // Throw after brief hold
-        if(!p._holdTimer) p._holdTimer=60;
+        // Ball kurz stoppen
+        ball.vx*=0.5; ball.vy*=0.5;
+        if(!p._holdTimer) p._holdTimer=50;
         p._holdTimer--;
         if(p._holdTimer<=0){
-          p._holdTimer=0;
-          ball.owner=null;
-          // Find nearest red teammate to throw to
+          p._holdTimer=0; ball.owner=null;
           let bT=null,bD=Infinity;
           aiPlayers.forEach((t,ti)=>{
             if(ti===0)return;
@@ -642,27 +631,32 @@ function updateAI(){
           });
           if(bT){
             const ddx=bT.x-ball.x,ddy=bT.y-ball.y,dd=Math.hypot(ddx,ddy)||1;
-            ball.vx=(ddx/dd)*12; ball.vy=(ddy/dd)*12;
+            ball.vx=(ddx/dd)*13; ball.vy=(ddy/dd)*13;
           }
         }
       }
     } else if(redHasBall){
       if(i===ni){
-        // Ball carrier → rush toward blue goal
-        tx=fx-15; ty=H/2+(ball.y-H/2)*0.3;
-        // Dribble: carry ball while running
-        if(ball.owner===p){
-          ball.x=p.x-22; ball.y=p.y; ball.vx=0; ball.vy=0;
-          // Shoot if close enough to goal
-          const distToGoal=Math.hypot((fx-gd)-ball.x, H/2-ball.y);
-          if(distToGoal<fw*0.35){
-            ball.owner=null;
-            const tgx=(fx-gd)-ball.x, tgy=H/2-ball.y;
-            const tgl=Math.hypot(tgx,tgy)||1;
-            ball.vx=(tgx/tgl)*(11+Math.random()*6);
-            ball.vy=(tgy/tgl)*(11+Math.random()*6)+(Math.random()-0.5)*2;
-            aiKickCD=35;
+        // Ball-Jäger: läuft zum Ball und schiebt ihn Richtung Tor
+        tx=ball.x; ty=ball.y;
+        const bdp=dst(p,ball);
+        if(bdp<p.r+ball.r+5&&aiKickCD===0){
+          // Sanft Richtung blaues Tor schieben
+          const tgx=(fx-gd)-ball.x, tgy=H/2-ball.y;
+          const tgl=Math.hypot(tgx,tgy)||1;
+          const distToGoal=Math.hypot(tgx,tgy);
+          if(distToGoal<fw*0.38){
+            // Schuss aufs Tor
+            ball.vx=(tgx/tgl)*(11+Math.random()*5)+(Math.random()-0.5)*2;
+            ball.vy=(tgy/tgl)*(11+Math.random()*5)+(Math.random()-0.5)*3;
+            aiKickCD=40;
+          } else {
+            // Dribbling-Schubs
+            ball.vx=ball.vx*0.3+(tgx/tgl)*5;
+            ball.vy=ball.vy*0.3+(tgy/tgl)*5;
+            aiKickCD=12;
           }
+          ball.owner=p;
         }
       } else {
         // Support: advance into space
@@ -703,24 +697,19 @@ function updateAI(){
         ball.owner=p;
         ball.vx=0; ball.vy=0;
       }
-      // Tackle blue player — nur 30% Chance (war 60%)
-      if(bd<p.r+ball.r+12&&aiKickCD===0&&ball.owner?.team==='blue'){
-        if(Math.random()<0.28){ // sehr selten stehlen
-          ball.owner=null;
-          const tgx=(fx-gd)-ball.x, tgy=H/2-ball.y;
-          const tgl=Math.hypot(tgx,tgy)||1;
-          ball.vx=(tgx/tgl)*(8+Math.random()*5)+(Math.random()-0.5)*3;
-          ball.vy=(tgy/tgl)*(8+Math.random()*5)+(Math.random()-0.5)*4;
-          aiKickCD=45; // längerer Cooldown = seltener
-        }
-      }
-      // Kick loose ball — mit Ungenauigkeit
-      if(bd<p.r+ball.r+8&&aiKickCD===0&&!ball.owner){
+      // Tackle: schiebt Ball weg wenn er nah ist
+      if(bd<p.r+ball.r+10&&aiKickCD===0){
         const tgx=(fx-gd)-ball.x, tgy=H/2-ball.y;
         const tgl=Math.hypot(tgx,tgy)||1;
-        ball.vx=(tgx/tgl)*(7+Math.random()*5)+(Math.random()-0.5)*4;
-        ball.vy=(tgy/tgl)*(7+Math.random()*5)+(Math.random()-0.5)*5;
-        aiKickCD=40;
+        // Nur tackeln wenn Ball beim Gegner oder lose
+        if(!ball.owner||ball.owner.team==='blue'){
+          if(Math.random()<0.30){ // selten
+            ball.vx=(tgx/tgl)*(8+Math.random()*5)+(Math.random()-0.5)*3;
+            ball.vy=(tgy/tgl)*(8+Math.random()*5)+(Math.random()-0.5)*4;
+            ball.owner=p;
+            aiKickCD=45;
+          }
+        }
       }
     }
   });
@@ -740,7 +729,7 @@ function updateBlueGK(){
   }
 
   if(ball.owner===gk){
-    ball.x=gk.x+22; ball.y=gk.y; ball.vx=0; ball.vy=0;
+    ball.vx*=0.4; ball.vy*=0.4; // Ball abbremsen statt teleportieren
     if(!gk._holdTimer) gk._holdTimer=60;
     gk._holdTimer--;
     if(gk._holdTimer<=0){
@@ -778,16 +767,14 @@ function physics(){
     p.y=clamp(p.y,fy+p.r,fy+fh-p.r);
   });
 
-  if(ball.owner){
-    ball.x=clamp(ball.x,fx+ball.r,fx+fw-ball.r);
-    ball.y=clamp(ball.y,fy+ball.r,fy+fh-ball.r);
-    return;
-  }
-
+  // Ball bewegt sich IMMER frei — kein Teleportieren mehr
   ball.x+=ball.vx; ball.y+=ball.vy;
-  ball.vx*=0.985; ball.vy*=0.985;
+  // Reibung: Ball verlangsamt sich auf Gras
+  ball.vx*=0.975; ball.vy*=0.975;
+  // Extra Bremse bei niedrigem Tempo (rollt aus)
   const sp=Math.hypot(ball.vx,ball.vy);
-  if(sp>0.1){const f=Math.max(0,sp-0.05)/sp;ball.vx*=f;ball.vy*=f;}
+  if(sp>0.05&&sp<3){const f=Math.max(0,sp-0.08)/sp;ball.vx*=f;ball.vy*=f;}
+  if(sp<0.08){ball.vx=0;ball.vy=0;}
 
   if(ball.y-ball.r<fy){ball.y=fy+ball.r;ball.vy*=-0.72;}
   if(ball.y+ball.r>fy+fh){ball.y=fy+fh-ball.r;ball.vy*=-0.72;}
