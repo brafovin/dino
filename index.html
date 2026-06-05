@@ -508,8 +508,6 @@ function startGame(){
   if(!aiTeam)  aiTeam  = TEAMS[1];
 
   document.getElementById('overlay').style.display='none';
-  document.getElementById('screen-pick').style.display='block';
-  document.getElementById('screen-go').style.display='none';
   document.getElementById('res').textContent='';
 
   sP=0;sAI=0;timeLeft=180;gameOver=false;elapsed=0;
@@ -642,22 +640,18 @@ function moveControlled(){
   p.vx=dx*spd; p.vy=dy*spd;
 
   // ── DRIBBLING: Spieler schiebt Ball sanft vor sich her ──
-  // Ball.owner ist nur noch ein Marker "wer hat den Ball zuletzt berührt"
   dribbleCooldown=Math.max(0,dribbleCooldown-1);
   const bd=dst(p,ball);
-  if(bd < p.r+ball.r+4 && dribbleCooldown===0 && !isPowerCharging){
+  if(bd < p.r+ball.r+5 && dribbleCooldown===0 && !isPowerCharging){
     if(dx!==0||dy!==0){
-      // Schiebt Ball sanft in Laufrichtung — Ball ROLLT, wird nicht getragen
-      const pushForce=sprint?7:5;
-      ball.vx = ball.vx*0.3 + dx*pushForce;
-      ball.vy = ball.vy*0.3 + dy*pushForce;
-      ball.owner=p;
-      dribbleCooldown=8; // kurze Pause bis nächstes Anstoßen
+      const pushForce=sprint?7.5:5.5;
+      ball.vx = ball.vx*0.25 + dx*pushForce;
+      ball.vy = ball.vy*0.25 + dy*pushForce;
+      dribbleCooldown=6;
     } else {
-      // Stehend: Ball kurz stoppen
-      ball.vx*=0.7; ball.vy*=0.7;
-      ball.owner=p;
+      ball.vx*=0.6; ball.vy*=0.6; // stehend: Ball abbremsen
     }
+    ball.owner=p; // Marker: wer zuletzt berührt hat
   }
 
   // ── GRÄTSCHEN: F oder X ──
@@ -665,14 +659,14 @@ function moveControlled(){
   if((keys['KeyF']||keys['KeyX'])&&tackleCooldown===0){
     let nearAI=null,nearD=Infinity;
     aiPlayers.forEach(a=>{const d=dst(p,a);if(d<nearD){nearD=d;nearAI=a;}});
-    if(nearAI&&nearD<p.r+nearAI.r+32){
+    if(nearAI&&nearD<p.r+nearAI.r+35){
       const bdAI=dst(nearAI,ball);
-      if(bdAI<nearAI.r+ball.r+30){
-        // Ball wegschlagen
+      if(bdAI<nearAI.r+ball.r+35){
+        // Ball wegschlagen in meine Laufrichtung
         const kx=ball.x-nearAI.x, ky=ball.y-nearAI.y;
         const kd=Math.hypot(kx,ky)||1;
-        ball.vx=(kx/kd)*8+playerFaceDir.x*5;
-        ball.vy=(ky/kd)*8+playerFaceDir.y*5;
+        ball.vx=(kx/kd)*6 + playerFaceDir.x*6;
+        ball.vy=(ky/kd)*6 + playerFaceDir.y*6;
         ball.owner=p;
         showMsg('💪 GRÄTSCHER!',1000);
       }
@@ -712,8 +706,8 @@ function doShoot(pw){
   // Kraft
   const force=15+pw*20;
   ball.vx=sx*force; ball.vy=sy*force;
-  ball.owner=p;
-  dribbleCooldown=20; // kein sofortiges Dribbling nach Schuss
+  ball.owner=null; // nach Schuss losgelassen
+  dribbleCooldown=25;
 
   if(pw>0.8)      showMsg('💥 TRAUMSCHUSS!',900);
   else if(pw>0.5) showMsg('⚽ Starker Schuss!',700);
@@ -790,7 +784,7 @@ function updateAI(){
             ball.vy=ball.vy*0.3+(tgy/tgl)*5;
             aiKickCD=12;
           }
-          ball.owner=p;
+          ball.owner=null; // nach KI-Schuss freigeben
         }
       } else {
         // Support: advance into space
@@ -826,21 +820,23 @@ function updateAI(){
     // Tackle + grab ball (non-GK)  — KI schwächer
     if(role!=='gk'){
       const bd=dst(p,ball);
-      // Auto-grab loose ball — nur sehr nah
-      if(bd<p.r+ball.r+3 && !ball.owner){
-        ball.owner=p;
-        ball.vx=0; ball.vy=0;
-      }
-      // Tackle: schiebt Ball weg wenn er nah ist
-      if(bd<p.r+ball.r+10&&aiKickCD===0){
+      // Ball-Kontakt: leicht Richtung Tor schubsen wenn sehr nah
+      if(bd<p.r+ball.r+3 && !ball.owner && aiKickCD===0){
         const tgx=(fx-gd)-ball.x, tgy=H/2-ball.y;
         const tgl=Math.hypot(tgx,tgy)||1;
-        // Nur tackeln wenn Ball beim Gegner oder lose
+        ball.vx=ball.vx*0.3+(tgx/tgl)*4;
+        ball.vy=ball.vy*0.3+(tgy/tgl)*4;
+        ball.owner=p; aiKickCD=8;
+      }
+      // Tackle: schiebt Ball Richtung blaues Tor
+      if(bd<p.r+ball.r+12&&aiKickCD===0){
+        const tgx=(fx-gd)-ball.x, tgy=H/2-ball.y;
+        const tgl=Math.hypot(tgx,tgy)||1;
         if(!ball.owner||ball.owner.team==='blue'){
-          if(Math.random()<0.30){ // selten
+          if(Math.random()<0.30){
             ball.vx=(tgx/tgl)*(8+Math.random()*5)+(Math.random()-0.5)*3;
             ball.vy=(tgy/tgl)*(8+Math.random()*5)+(Math.random()-0.5)*4;
-            ball.owner=p;
+            ball.owner=null; // ball frei nach Tackle
             aiKickCD=45;
           }
         }
@@ -1148,7 +1144,7 @@ function loop(ts){
   updateBlueGK();
   updateAI();
   physics();
-  updateCrowd(dt,false);
+  updateCrowd(dt);
   updateHUD();
   checkEnd();
 
