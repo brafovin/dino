@@ -461,80 +461,77 @@ function quickPass(){
 }
 
 // ── Player movement ───────────────────────────────────────────
-let tackleCooldown = 0; // frames until next tackle allowed
+let tackleCooldown = 0;
 
 function moveControlled(){
   const {fx,fy,fw,fh}=F();
   const p=players[controlledIdx];
   const sprint=keys['ShiftLeft']||keys['ShiftRight'];
-  // Much faster speeds
-  const spd=sprint?9.5:6.8;
+  const spd=sprint?14:10; // sehr schnell
   let dx=0,dy=0;
   if(keys['ArrowLeft']||keys['KeyA'])dx-=1;
   if(keys['ArrowRight']||keys['KeyD'])dx+=1;
   if(keys['ArrowUp']||keys['KeyW'])dy-=1;
   if(keys['ArrowDown']||keys['KeyS'])dy+=1;
   if(dx||dy){const l=Math.hypot(dx,dy);dx/=l;dy/=l;playerFaceDir={x:dx,y:dy};}
-  p.vx+=(dx*spd-p.vx)*0.40;
-  p.vy+=(dy*spd-p.vy)*0.40;
+  // Direkte Geschwindigkeit, kein Schlupf
+  p.vx=dx*spd; p.vy=dy*spd;
 
-  // ── AUTO DRIBBLE: walk into loose ball to pick it up ──
-  if(!ball.owner && !isPowerCharging){
+  // ── AUTO DRIBBLING: Einfach in Ball laufen = Ball mitnehmen ──
+  if(!ball.owner){
     const bd=dst(p,ball);
-    if(bd < p.r+ball.r+6){
+    if(bd < p.r+ball.r+10){
       ball.owner=p;
       ball.vx=0; ball.vy=0;
     }
   }
+  // Ball trägt sich mit Spieler mit
+  if(ball.owner===p){
+    ball.x=p.x+playerFaceDir.x*24;
+    ball.y=p.y+playerFaceDir.y*24;
+    ball.vx=0; ball.vy=0;
+    // Wenn kein Input → Ball vor dem Spieler halten
+    if(dx===0&&dy===0){
+      ball.x=p.x+playerFaceDir.x*22;
+      ball.y=p.y+playerFaceDir.y*22;
+    }
+  }
 
-  // ── TACKLE: press F or X to steal ball from nearby enemy ──
+  // ── GRÄTSCHEN: F oder X drücken ──
   tackleCooldown=Math.max(0,tackleCooldown-1);
   if((keys['KeyF']||keys['KeyX']) && tackleCooldown===0){
-    // Find nearest AI player
     let nearAI=null, nearD=Infinity;
     aiPlayers.forEach(a=>{
       const d=dst(p,a);
       if(d<nearD){nearD=d;nearAI=a;}
     });
-    if(nearAI && nearD < p.r+nearAI.r+22){
-      // Tackle! Steal ball
-      if(ball.owner===nearAI){
+    if(nearAI && nearD < p.r+nearAI.r+30){
+      // Ball stehlen
+      if(ball.owner===nearAI || (!ball.owner && dst(nearAI,ball)<nearAI.r+ball.r+25)){
         ball.owner=p;
         ball.vx=0; ball.vy=0;
-        showMsg('💪 Grätscher! Ball gestohlen!',1200);
-        tackleCooldown=40;
-      } else if(!ball.owner && dst(nearAI,ball)<nearAI.r+ball.r+20){
-        // Ball loose near enemy — grab it
-        ball.owner=p;
-        ball.vx=0; ball.vy=0;
-        showMsg('⚡ Ball geschnappt!',800);
-        tackleCooldown=25;
+        showMsg('💪 GRÄTSCHER! Ball gestohlen!',1200);
+      } else {
+        showMsg('⚡ Tackle!',600);
       }
-      // Knock enemy back
-      const kx=(nearAI.x-p.x),ky=(nearAI.y-p.y);
+      // Gegner wegschubsen
+      const kx=nearAI.x-p.x, ky=nearAI.y-p.y;
       const kd=Math.hypot(kx,ky)||1;
-      nearAI.vx+=(kx/kd)*5; nearAI.vy+=(ky/kd)*5;
+      nearAI.vx+=(kx/kd)*9; nearAI.vy+=(ky/kd)*9;
+      tackleCooldown=35;
     }
   }
 
-  // Teammates: hold formation relative to ball, faster
+  // Mitspieler folgen schneller in Formation
   players.forEach((sp,i)=>{
     if(i===controlledIdx)return;
     const [xf,yo]=BLUE_FORM[i];
     const tx=clamp(fx+fw*xf+(ball.x-fx-fw/2)*0.28, fx+sp.r, fx+fw-sp.r);
     const ty=clamp(fy+fh/2+fh*yo+(ball.y-fy-fh/2)*0.18, fy+sp.r, fy+fh-sp.r);
     const dx2=tx-sp.x,dy2=ty-sp.y,d=Math.hypot(dx2,dy2)||1;
-    const s=Math.min(5.5,d*0.18);
-    sp.vx+=(dx2/d*s-sp.vx)*0.15;
-    sp.vy+=(dy2/d*s-sp.vy)*0.15;
+    const s=Math.min(8,d*0.22);
+    sp.vx=(dx2/d)*s; sp.vy=(dy2/d)*s;
   });
-
-  // Carry ball when owner
-  if(ball.owner===p){
-    ball.x=p.x+playerFaceDir.x*22;
-    ball.y=p.y+playerFaceDir.y*22;
-    ball.vx=0; ball.vy=0;
-  }
 }
 
 function doShoot(pw){
@@ -643,10 +640,8 @@ function updateAI(){
 
     if(role!=='gk'||(role==='gk'&&!ball.owner)){
       const ddx=tx-p.x,ddy=ty-p.y,dd=Math.hypot(ddx,ddy)||1;
-      // AI also faster now
-      const spd=Math.min(6.5,dd*0.28);
-      p.vx+=(ddx/dd*spd-p.vx)*0.28;
-      p.vy+=(ddy/dd*spd-p.vy)*0.28;
+      const spd=Math.min(11,dd*0.35); // AI schnell aber etwas langsamer als Spieler
+      p.vx=(ddx/dd)*spd; p.vy=(ddy/dd)*spd;
     }
 
     // Tackle + grab ball (non-GK)
@@ -731,7 +726,7 @@ function physics(){
 
   [...players,...aiPlayers].forEach(p=>{
     p.x+=p.vx; p.y+=p.vy;
-    p.vx*=0.79; p.vy*=0.79;
+    p.vx*=0.60; p.vy*=0.60; // höhere Reibung = direktere Steuerung
     p.x=clamp(p.x,fx+p.r,fx+fw-p.r);
     p.y=clamp(p.y,fy+p.r,fy+fh-p.r);
   });
