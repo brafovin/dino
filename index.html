@@ -108,7 +108,7 @@ function F() {
         sb = H * 0.12;  // bottom stand
   const fx = sl, fy = st;
   const fw = W - sl - sr, fh = H - st - sb;
-  const gh = fh * 0.28,  gd = W * 0.024;
+  const gh = fh * 0.40,  gd = W * 0.024; // Tor viel größer
   const gy = H/2 - gh/2;
   return { fx,fy,fw,fh,gh,gd,gy, sl,sr,st,sb };
 }
@@ -416,9 +416,10 @@ document.addEventListener('keydown',e=>{
   if(e.code==='KeyE') switchPlayer();
   if(e.code==='KeyQ') quickPass();
   if(e.code==='Space'&&!isPowerCharging){
+    // Schnellschuss: sofort schießen OHNE aufladen (kurz drücken)
     const wi=players.findIndex(p=>p===ball.owner);
     if(wi>=0) controlledIdx=wi; else switchToNearest();
-    isPowerCharging=true; powerCharge=0;
+    isPowerCharging=true; powerCharge=0.3; // startet schon bei 30% damit kurzes Drücken reicht
   }
 });
 document.addEventListener('keyup',e=>{
@@ -536,17 +537,23 @@ function moveControlled(){
 
 function doShoot(pw){
   const p=players[controlledIdx];
-  if(ball.owner!==p&&dst(p,ball)>p.r+ball.r+45)return;
+  if(ball.owner!==p&&dst(p,ball)>p.r+ball.r+50)return;
   ball.owner=null;
-  const {fx,fw,gd}=F();
-  const gx=fx+fw+gd, gy=H/2;
-  const dx=gx-ball.x,dy=gy-ball.y,dl=Math.hypot(dx,dy)||1;
-  let sx=playerFaceDir.x*0.4+(dx/dl)*0.6;
-  let sy=playerFaceDir.y*0.4+(dy/dl)*0.6;
+  const {fx,fw,gd,gh,gy}=F();
+  // Schuss DIREKT aufs Tor — 80% Tor-Lock, 20% Spielerrichtung
+  const gx=fx+fw+gd;
+  // Ziel: zufälliger Punkt innerhalb des Tors
+  const targetY=gy+gh*0.2+Math.random()*gh*0.6;
+  const dx=gx-ball.x, dy=targetY-ball.y, dl=Math.hypot(dx,dy)||1;
+  let sx=playerFaceDir.x*0.2+(dx/dl)*0.8;
+  let sy=playerFaceDir.y*0.2+(dy/dl)*0.8;
   const sl2=Math.hypot(sx,sy)||1; sx/=sl2; sy/=sl2;
-  sx+=(Math.random()-0.5)*(1-pw)*0.4;
-  sy+=(Math.random()-0.5)*(1-pw)*0.55;
-  ball.vx=sx*(11+pw*16); ball.vy=sy*(11+pw*16);
+  // Weniger Abweichung bei schwachem Schuss
+  sx+=(Math.random()-0.5)*(1-pw)*0.25;
+  sy+=(Math.random()-0.5)*(1-pw)*0.3;
+  const force=13+pw*18; // stärkere Schüsse
+  ball.vx=sx*force; ball.vy=sy*force;
+  showMsg(pw>0.7?'💥 Traumtor-Schuss!':pw>0.4?'⚽ Schuss!':'🦶 Schuss!', 600);
 }
 
 // ── AI ────────────────────────────────────────────────────────
@@ -625,12 +632,16 @@ function updateAI(){
       }
     } else if(blueHasBall){
       if(i===ni){
-        // Press ball carrier
-        tx=ball.x+8; ty=ball.y;
+        // Press ball carrier — aber nicht zu aggressiv, bleibt 40px entfernt
+        const pressDx=ball.x-p.x, pressDy=ball.y-p.y;
+        const pressD=Math.hypot(pressDx,pressDy)||1;
+        // Stop 40px away = lässt Raum zum Dribbeln
+        tx=ball.x-(pressDx/pressD)*40;
+        ty=ball.y-(pressDy/pressD)*40;
       } else {
-        // Hold defensive shape
-        tx=clamp(fx+fw*xf+(ball.x-fx-fw*xf)*0.3, fx+p.r, fx+fw-p.r);
-        ty=clamp(fy+fh/2+fh*yo+(ball.y-fy-fh/2)*0.2, fy+p.r, fy+fh-p.r);
+        // Hold defensive shape, reagiert langsamer
+        tx=clamp(fx+fw*xf+(ball.x-fx-fw*xf)*0.15, fx+p.r, fx+fw-p.r);
+        ty=clamp(fy+fh/2+fh*yo+(ball.y-fy-fh/2)*0.10, fy+p.r, fy+fh-p.r);
       }
     } else {
       // Ball loose
@@ -640,40 +651,37 @@ function updateAI(){
 
     if(role!=='gk'||(role==='gk'&&!ball.owner)){
       const ddx=tx-p.x,ddy=ty-p.y,dd=Math.hypot(ddx,ddy)||1;
-      const spd=Math.min(11,dd*0.35); // AI schnell aber etwas langsamer als Spieler
+      // KI LANGSAMER als Spieler — faireres Spiel
+      const spd=Math.min(7.5,dd*0.22);
       p.vx=(ddx/dd)*spd; p.vy=(ddy/dd)*spd;
     }
 
-    // Tackle + grab ball (non-GK)
+    // Tackle + grab ball (non-GK)  — KI schwächer
     if(role!=='gk'){
       const bd=dst(p,ball);
-      // Auto-grab loose ball
-      if(bd<p.r+ball.r+5 && !ball.owner){
+      // Auto-grab loose ball — nur sehr nah
+      if(bd<p.r+ball.r+3 && !ball.owner){
         ball.owner=p;
         ball.vx=0; ball.vy=0;
       }
-      // Tackle blue player
-      if(bd<p.r+ball.r+14&&aiKickCD===0&&ball.owner?.team==='blue'){
-        // 60% chance to succeed
-        if(Math.random()<0.60){
+      // Tackle blue player — nur 30% Chance (war 60%)
+      if(bd<p.r+ball.r+12&&aiKickCD===0&&ball.owner?.team==='blue'){
+        if(Math.random()<0.28){ // sehr selten stehlen
           ball.owner=null;
           const tgx=(fx-gd)-ball.x, tgy=H/2-ball.y;
           const tgl=Math.hypot(tgx,tgy)||1;
-          const pw=10+Math.random()*7;
-          ball.vx=(tgx/tgl)*pw+(Math.random()-0.5)*2;
-          ball.vy=(tgy/tgl)*pw+(Math.random()-0.5)*3;
-          aiKickCD=25;
-          // Grab for self instead sometimes
-          if(Math.random()<0.4){ ball.vx=0;ball.vy=0;ball.owner=p; }
+          ball.vx=(tgx/tgl)*(8+Math.random()*5)+(Math.random()-0.5)*3;
+          ball.vy=(tgy/tgl)*(8+Math.random()*5)+(Math.random()-0.5)*4;
+          aiKickCD=45; // längerer Cooldown = seltener
         }
       }
-      // Kick loose ball toward goal
-      if(bd<p.r+ball.r+10&&aiKickCD===0&&!ball.owner){
+      // Kick loose ball — mit Ungenauigkeit
+      if(bd<p.r+ball.r+8&&aiKickCD===0&&!ball.owner){
         const tgx=(fx-gd)-ball.x, tgy=H/2-ball.y;
         const tgl=Math.hypot(tgx,tgy)||1;
-        ball.vx=(tgx/tgl)*(9+Math.random()*7)+(Math.random()-0.5)*2;
-        ball.vy=(tgy/tgl)*(9+Math.random()*7)+(Math.random()-0.5)*3;
-        aiKickCD=25;
+        ball.vx=(tgx/tgl)*(7+Math.random()*5)+(Math.random()-0.5)*4;
+        ball.vy=(tgy/tgl)*(7+Math.random()*5)+(Math.random()-0.5)*5;
+        aiKickCD=40;
       }
     }
   });
