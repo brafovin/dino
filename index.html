@@ -52,14 +52,28 @@ canvas { display:block; flex-shrink:0; }
   box-shadow:0 0 24px rgba(240,192,0,0.5);
 }
 .btn:hover { transform:scale(1.05); }
+
+/* Team cards */
+.tcard {
+  width:130px; background:#1a1a1a; border:2px solid #333;
+  border-radius:14px; padding:14px 10px; cursor:pointer;
+  transition:all 0.18s; text-align:center; user-select:none;
+}
+.tcard:hover { border-color:#f0c040; transform:translateY(-3px); }
+.tcard.selected { border-color:#f0c040; background:#241f00; transform:translateY(-3px); box-shadow:0 0 18px rgba(240,192,64,0.35); }
+.tcard.ai-selected { border-color:#ff4444; background:#200000; box-shadow:0 0 18px rgba(255,60,60,0.3); }
+.tcard .flag { font-size:2.8rem; margin-bottom:6px; }
+.tcard .tname { font-size:0.82rem; font-weight:900; color:#fff; letter-spacing:1px; margin-bottom:3px; }
+.tcard .trating { font-size:0.72rem; color:#888; }
+.tcard .tcolor { width:100%; height:5px; border-radius:3px; margin-top:8px; }
 </style>
 </head>
 <body>
 
 <div id="hud">
-  <div class="team">🔵 FC BLAU <div class="score" id="sP">0</div></div>
+  <div class="team">🔵 <span id="myTeamName">FC BLAU</span> <div class="score" id="sP">0</div></div>
   <div id="tc"><div class="time" id="td">3:00</div><div class="lbl">SPIELZEIT</div></div>
-  <div class="team"><div class="score" id="sAI">0</div> ROT FC 🔴</div>
+  <div class="team"><div class="score" id="sAI">0</div> <span id="aiTeamName">ROT FC</span> 🔴</div>
 </div>
 <canvas id="c"></canvas>
 <div id="bar">
@@ -72,18 +86,118 @@ canvas { display:block; flex-shrink:0; }
 </div>
 
 <div id="overlay">
-  <h1>⚽ FC DINO 11v11</h1>
-  <div class="info">
-    <b>WASD / Pfeiltasten</b> — Spieler bewegen &nbsp;|&nbsp; <b>SHIFT</b> — Sprinten<br>
-    <b>LEERTASTE halten</b> — Schuss aufladen, <b>loslassen</b> — Schießen<br>
-    <b>Q</b> — Kurzpass zum freien Mitspieler &nbsp;|&nbsp; <b>E</b> — Spielerwechsel<br>
-    <span style="color:#aaa">In Ball laufen = mitnehmen! &nbsp;<b style="color:#f0c040">F / X</b> = Grätschen &amp; Ball stehlen</span>
+
+  <!-- SEITE 1: Team-Auswahl -->
+  <div id="screen-pick">
+    <h1 style="margin-bottom:6px">⚽ FC DINO 11v11</h1>
+    <p style="color:#888;font-size:0.85rem;margin-bottom:24px;letter-spacing:1px">WÄHLE DEIN TEAM</p>
+
+    <div style="display:flex;gap:32px;flex-wrap:wrap;justify-content:center;margin-bottom:28px" id="team-grid"></div>
+
+    <p style="color:#555;font-size:0.78rem;margin-bottom:10px">GEGNER</p>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;justify-content:center;margin-bottom:28px" id="ai-grid"></div>
+
+    <button class="btn" id="start-btn" onclick="confirmTeams()" disabled style="opacity:0.4">
+      TEAM WÄHLEN ↑
+    </button>
   </div>
-  <div class="res" id="res"></div>
-  <button class="btn" onclick="startGame()">⚽ ANPFIFF!</button>
+
+  <!-- SEITE 2: Spielanleitung + Anpfiff -->
+  <div id="screen-go" style="display:none;text-align:center">
+    <div style="display:flex;gap:40px;align-items:center;justify-content:center;margin-bottom:18px">
+      <div id="preview-my"  style="font-size:3rem"></div>
+      <div style="font-size:2rem;color:#888">VS</div>
+      <div id="preview-ai"  style="font-size:3rem"></div>
+    </div>
+    <div id="match-title" style="font-size:1.5rem;font-weight:900;margin-bottom:16px"></div>
+    <div class="info" style="margin-bottom:18px">
+      <b>WASD / Pfeiltasten</b> — Bewegen &nbsp;|&nbsp; <b>SHIFT</b> — Sprint<br>
+      <b>LEERTASTE halten</b> — Schuss &nbsp;|&nbsp; <b>Q/R</b> — Pass &nbsp;|&nbsp; <b>F/X</b> — Grätschen<br>
+      <b>E</b> — Spielerwechsel
+    </div>
+    <div class="res" id="res"></div>
+    <div style="display:flex;gap:14px;justify-content:center">
+      <button class="btn" style="background:#333;color:#aaa" onclick="backToPick()">← Zurück</button>
+      <button class="btn" onclick="startGame()">⚽ ANPFIFF!</button>
+    </div>
+  </div>
+
 </div>
 
 <script>
+// ── TEAMS ────────────────────────────────────────────────────
+const TEAMS = [
+  { id:'bvb',   name:'BVB',          flag:'🟡', color1:'#f0c040', color2:'#111',   rating:'90', city:'Dortmund'   },
+  { id:'fcb',   name:'FC Bayern',    flag:'🔴', color1:'#cc1111', color2:'#ffffff', rating:'95', city:'München'    },
+  { id:'rmad',  name:'Real Madrid',  flag:'⚪', color1:'#ffffff', color2:'#c0a000', rating:'96', city:'Madrid'     },
+  { id:'barca', name:'FC Barcelona', flag:'🔵', color1:'#003399', color2:'#cc0000', rating:'93', city:'Barcelona'  },
+  { id:'mci',   name:'Man City',     flag:'🩵', color1:'#6bcaeb', color2:'#ffffff', rating:'94', city:'Manchester' },
+  { id:'psg',   name:'PSG',          flag:'🟦', color1:'#004494', color2:'#ee1111', rating:'91', city:'Paris'      },
+  { id:'juv',   name:'Juventus',     flag:'⚫', color1:'#111111', color2:'#ffffff', rating:'88', city:'Turin'      },
+  { id:'atm',   name:'Atlético',     flag:'🟥', color1:'#cc2222', color2:'#ffffff', rating:'87', city:'Madrid'     },
+  { id:'ars',   name:'Arsenal',      flag:'🔴', color1:'#ee2222', color2:'#ffffff', rating:'89', city:'London'     },
+  { id:'che',   name:'Chelsea',      flag:'🔵', color1:'#0044aa', color2:'#ffffff', rating:'86', city:'London'     },
+  { id:'int',   name:'Inter Milan',  flag:'🔵', color1:'#0000aa', color2:'#111111', rating:'90', city:'Mailand'    },
+  { id:'por',   name:'FC Porto',     flag:'🐉', color1:'#004488', color2:'#cc9900', rating:'82', city:'Porto'      },
+];
+
+let myTeam  = null;
+let aiTeam  = null;
+
+function buildTeamPicker() {
+  const tg = document.getElementById('team-grid');
+  const ag = document.getElementById('ai-grid');
+  tg.innerHTML = TEAMS.map(t => `
+    <div class="tcard" id="my-${t.id}" onclick="pickMyTeam('${t.id}')">
+      <div class="flag">${t.flag}</div>
+      <div class="tname">${t.name}</div>
+      <div class="trating">⭐ ${t.rating}</div>
+      <div class="tcolor" style="background:${t.color1}"></div>
+    </div>`).join('');
+  ag.innerHTML = TEAMS.map(t => `
+    <div class="tcard" id="ai-${t.id}" onclick="pickAiTeam('${t.id}')">
+      <div class="flag">${t.flag}</div>
+      <div class="tname">${t.name}</div>
+      <div class="trating">⭐ ${t.rating}</div>
+      <div class="tcolor" style="background:${t.color1}"></div>
+    </div>`).join('');
+}
+
+function pickMyTeam(id) {
+  document.querySelectorAll('#team-grid .tcard').forEach(c=>c.classList.remove('selected'));
+  document.getElementById('my-'+id)?.classList.add('selected');
+  myTeam = TEAMS.find(t=>t.id===id);
+  checkReady();
+}
+function pickAiTeam(id) {
+  document.querySelectorAll('#ai-grid .tcard').forEach(c=>c.classList.remove('ai-selected'));
+  document.getElementById('ai-'+id)?.classList.add('ai-selected');
+  aiTeam = TEAMS.find(t=>t.id===id);
+  checkReady();
+}
+function checkReady() {
+  const btn = document.getElementById('start-btn');
+  if(myTeam && aiTeam) {
+    btn.disabled=false; btn.style.opacity='1';
+    btn.textContent=`⚽ ${myTeam.name} vs ${aiTeam.name}`;
+  }
+}
+function confirmTeams() {
+  if(!myTeam||!aiTeam) return;
+  document.getElementById('screen-pick').style.display='none';
+  document.getElementById('screen-go').style.display='block';
+  document.getElementById('preview-my').textContent=myTeam.flag+' '+myTeam.name;
+  document.getElementById('preview-ai').textContent=aiTeam.flag+' '+aiTeam.name;
+  document.getElementById('match-title').innerHTML=
+    `<span style="color:${myTeam.color1}">${myTeam.name}</span> &nbsp;vs&nbsp; <span style="color:${aiTeam.color1}">${aiTeam.name}</span>`;
+  document.getElementById('myTeamName').textContent=myTeam.name;
+  document.getElementById('aiTeamName').textContent=aiTeam.name;
+}
+function backToPick() {
+  document.getElementById('screen-go').style.display='none';
+  document.getElementById('screen-pick').style.display='block';
+}
+
 // ── Canvas setup ──────────────────────────────────────────────
 const canvas = document.getElementById('c');
 const ctx    = canvas.getContext('2d');
@@ -345,6 +459,8 @@ function drawGoalPost(x,y,d,h,col){
 
 // ── State ─────────────────────────────────────────────────────
 let sP=0, sAI=0, timeLeft=180, gameOver=false;
+let PLAYER_COL1='#2266ff', PLAYER_COL2='#aaddff';
+let AI_COL1='#cc1111',     AI_COL2='#ffaaaa';
 let keys={}, powerCharge=0, isPowerCharging=false;
 let players=[], aiPlayers=[], ball={};
 let controlledIdx=0, playerFaceDir={x:1,y:0};
@@ -387,10 +503,28 @@ function resetPositions(){
 }
 
 function startGame(){
+  // Fallback falls kein Team gewählt
+  if(!myTeam)  myTeam  = TEAMS[0];
+  if(!aiTeam)  aiTeam  = TEAMS[1];
+
   document.getElementById('overlay').style.display='none';
+  document.getElementById('screen-pick').style.display='block';
+  document.getElementById('screen-go').style.display='none';
+  document.getElementById('res').textContent='';
+
   sP=0;sAI=0;timeLeft=180;gameOver=false;elapsed=0;
   keys={};powerCharge=0;isPowerCharging=false;lastTs=null;aiKickCD=0;
   resize(); buildCrowd();
+
+  // Teamfarben in Spieler & Crowd übernehmen
+  PLAYER_COL1 = myTeam.color1;
+  PLAYER_COL2 = myTeam.color2;
+  AI_COL1     = aiTeam.color1;
+  AI_COL2     = aiTeam.color2;
+
+  document.getElementById('myTeamName').textContent = myTeam.name;
+  document.getElementById('aiTeamName').textContent = aiTeam.name;
+
   resetPositions(); updateHUD();
   requestAnimationFrame(loop);
 }
@@ -837,9 +971,9 @@ function drawPlayer(p,isCtrl){
   if(isGK){
     gr.addColorStop(0,'#ffee88'); gr.addColorStop(1,'#cc9900');
   } else if(p.team==='blue'){
-    gr.addColorStop(0,'#88bbff'); gr.addColorStop(1,'#1044cc');
+    gr.addColorStop(0,PLAYER_COL2); gr.addColorStop(1,PLAYER_COL1);
   } else {
-    gr.addColorStop(0,'#ff9988'); gr.addColorStop(1,'#cc1111');
+    gr.addColorStop(0,AI_COL2); gr.addColorStop(1,AI_COL1);
   }
   ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,Math.PI*2);
   ctx.fillStyle=gr; ctx.fill();
@@ -983,14 +1117,22 @@ function drawMinimap(){
 function checkEnd(){
   if(timeLeft<=0&&!gameOver){
     gameOver=true;
+    const mn=myTeam?myTeam.name:'Blau';
+    const an=aiTeam?aiTeam.name:'Rot';
     let res;
-    if(sP>sAI)res='🏆 FC BLAU GEWINNT!';
-    else if(sAI>sP)res='💀 ROT FC GEWINNT!';
-    else res='🤝 UNENTSCHIEDEN!';
+    if(sP>sAI)      res=`🏆 ${mn} GEWINNT!`;
+    else if(sAI>sP) res=`💀 ${an} GEWINNT!`;
+    else             res='🤝 UNENTSCHIEDEN!';
     document.getElementById('res').textContent=res+` (${sP}:${sAI})`;
+    // Zeige Game-Over auf screen-go
+    document.getElementById('screen-pick').style.display='none';
+    document.getElementById('screen-go').style.display='block';
     document.getElementById('overlay').style.display='flex';
   }
 }
+
+// Init Team-Picker beim Laden
+buildTeamPicker();
 
 // ── Main loop ─────────────────────────────────────────────────
 function loop(ts){
