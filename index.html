@@ -65,7 +65,7 @@ canvas { display:block; flex-shrink:0; }
 <div id="bar">
   <div id="ctrl">
     <b>WASD/↑↓←→</b> Bewegen &nbsp;<b>SHIFT</b> Sprint &nbsp;
-    <b>LEERTASTE</b> Schuss &nbsp;<b>Q</b> Pass &nbsp;<b>E</b> Wechsel &nbsp;<b>F/X</b> Grätschen
+    <b>LEERTASTE</b> Schuss (halten=stärker) &nbsp;<b>Q/R</b> Pass &nbsp;<b>E</b> Wechsel &nbsp;<b>F/X</b> Grätschen
   </div>
   <div id="msg"></div>
   <div id="pw">SCHUSS <div id="pwo"><div id="pwi"></div></div></div>
@@ -409,23 +409,26 @@ function showMsg(t,d=2500){
 }
 
 // ── Input ─────────────────────────────────────────────────────
+let passTarget = null; // highlighted pass target
+
 document.addEventListener('keydown',e=>{
   if(['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code))e.preventDefault();
   if(keys[e.code])return;
   keys[e.code]=true;
   if(e.code==='KeyE') switchPlayer();
-  if(e.code==='KeyQ') quickPass();
+  if(e.code==='KeyQ'||e.code==='KeyR') doPass(); // Q oder R = Pass
   if(e.code==='Space'&&!isPowerCharging){
-    // Schnellschuss: sofort schießen OHNE aufladen (kurz drücken)
     const wi=players.findIndex(p=>p===ball.owner);
     if(wi>=0) controlledIdx=wi; else switchToNearest();
-    isPowerCharging=true; powerCharge=0.3; // startet schon bei 30% damit kurzes Drücken reicht
+    isPowerCharging=true; powerCharge=0;
   }
 });
 document.addEventListener('keyup',e=>{
   keys[e.code]=false;
   if(e.code==='Space'&&isPowerCharging){
-    isPowerCharging=false; doShoot(powerCharge); powerCharge=0;
+    isPowerCharging=false;
+    doShoot(powerCharge);
+    powerCharge=0;
   }
 });
 
@@ -442,23 +445,50 @@ function switchPlayer(){
   });
   controlledIdx=best;
 }
-function quickPass(){
+
+// ── PASS: findet den besten freien Mitspieler ────────────────
+function findBestPassTarget(){
   const p=players[controlledIdx];
-  if(ball.owner!==p&&dst(p,ball)>p.r+ball.r+45)return;
-  ball.owner=null;
-  let bestT=null,bestS=-Infinity;
+  let bestT=null, bestScore=-Infinity;
   players.forEach((t,i)=>{
-    if(i===controlledIdx)return;
+    if(i===controlledIdx) return;
+    // Score: weiter vorne (höheres x) + weiter von AI weg
     let minAI=Infinity;
     aiPlayers.forEach(a=>{const d=dst(t,a);if(d<minAI)minAI=d;});
-    const s=t.x*0.4+minAI*0.6;
-    if(s>bestS){bestS=s;bestT=t;}
+    // Bonus für Spieler die in Laufrichtung des Spielers sind
+    const angle=Math.atan2(t.y-p.y, t.x-p.x);
+    const facingAngle=Math.atan2(playerFaceDir.y, playerFaceDir.x);
+    const angleDiff=Math.abs(angle-facingAngle);
+    const dirBonus=Math.max(0,1-angleDiff/Math.PI)*30;
+    const score = t.x*0.5 + minAI*0.8 + dirBonus - dst(p,t)*0.05;
+    if(score>bestScore){bestScore=score;bestT=t;}
   });
-  if(bestT){
-    const dx=bestT.x-ball.x,dy=bestT.y-ball.y,d=Math.hypot(dx,dy)||1;
-    ball.vx=(dx/d)*13; ball.vy=(dy/d)*13;
-    showMsg('✅ Pass!',700);
+  return bestT;
+}
+
+function doPass(){
+  const p=players[controlledIdx];
+  // Ball muss beim Spieler oder sehr nah sein
+  if(ball.owner!==p && dst(p,ball)>p.r+ball.r+50) return;
+  const target=findBestPassTarget();
+  if(!target) return;
+
+  ball.owner=null;
+  passTarget=null;
+
+  const dx=target.x-ball.x, dy=target.y-ball.y;
+  const d=Math.hypot(dx,dy)||1;
+  // Geschwindigkeit abhängig von Distanz — kurzer Pass langsamer, langer Pass stärker
+  const passPower=clamp(d*0.055, 8, 18);
+  ball.vx=(dx/d)*passPower;
+  ball.vy=(dy/d)*passPower;
+
+  // Nach dem Pass: Kontrolle zum Passempfänger wechseln
+  const ti=players.indexOf(target);
+  if(ti>=0){
+    setTimeout(()=>{ controlledIdx=ti; },300);
   }
+  showMsg('➡️ Pass zu #'+target.num+'!', 800);
 }
 
 // ── Player movement ───────────────────────────────────────────
@@ -537,23 +567,32 @@ function moveControlled(){
 
 function doShoot(pw){
   const p=players[controlledIdx];
-  if(ball.owner!==p&&dst(p,ball)>p.r+ball.r+50)return;
+  if(ball.owner!==p && dst(p,ball)>p.r+ball.r+55) return;
   ball.owner=null;
   const {fx,fw,gd,gh,gy}=F();
-  // Schuss DIREKT aufs Tor — 80% Tor-Lock, 20% Spielerrichtung
   const gx=fx+fw+gd;
-  // Ziel: zufälliger Punkt innerhalb des Tors
-  const targetY=gy+gh*0.2+Math.random()*gh*0.6;
+
+  // Ziel: innerhalb Torpfosten, leicht zufällig je nach Power
+  // Bei vollem Power: ganz präzise. Bei wenig Power: mehr Streuung.
+  const spread=gh*(0.55-pw*0.35); // je mehr Power, desto kleiner Streubereich
+  const targetY=H/2 + (Math.random()-0.5)*spread;
+
   const dx=gx-ball.x, dy=targetY-ball.y, dl=Math.hypot(dx,dy)||1;
-  let sx=playerFaceDir.x*0.2+(dx/dl)*0.8;
-  let sy=playerFaceDir.y*0.2+(dy/dl)*0.8;
-  const sl2=Math.hypot(sx,sy)||1; sx/=sl2; sy/=sl2;
-  // Weniger Abweichung bei schwachem Schuss
-  sx+=(Math.random()-0.5)*(1-pw)*0.25;
-  sy+=(Math.random()-0.5)*(1-pw)*0.3;
-  const force=13+pw*18; // stärkere Schüsse
+  // Schussrichtung: 90% Torrichtung, 10% Spielerrichtung
+  let sx=(dx/dl)*0.9+playerFaceDir.x*0.1;
+  let sy=(dy/dl)*0.9+playerFaceDir.y*0.1;
+  const sl=Math.hypot(sx,sy)||1; sx/=sl; sy/=sl;
+
+  // Kraft: kurzer Druck = mittlerer Schuss, langer Druck = Vollgas
+  const minForce=14, maxForce=30;
+  const force=minForce+(maxForce-minForce)*pw;
   ball.vx=sx*force; ball.vy=sy*force;
-  showMsg(pw>0.7?'💥 Traumtor-Schuss!':pw>0.4?'⚽ Schuss!':'🦶 Schuss!', 600);
+
+  // Nachricht je nach Schussstärke
+  if(pw>0.8)      showMsg('💥 VOLLEY! TRAUMSCHUSS!',900);
+  else if(pw>0.5) showMsg('⚽ Starker Schuss!',700);
+  else if(pw>0.2) showMsg('🦶 Schuss!',500);
+  else            showMsg('🦶 Tipp!',400);
 }
 
 // ── AI ────────────────────────────────────────────────────────
@@ -884,13 +923,52 @@ function drawBall(){
 function drawPowerBar(){
   if(!isPowerCharging||powerCharge<0.04)return;
   const p=players[controlledIdx];
-  const w=54,h=8;
-  ctx.fillStyle='rgba(0,0,0,0.7)';
-  ctx.fillRect(p.x-w/2-1,p.y-p.r-18,w+2,h+2);
+  const w=60,h=9;
+  // Hintergrund
+  ctx.fillStyle='rgba(0,0,0,0.75)';
+  ctx.fillRect(p.x-w/2-1,p.y-p.r-20,w+2,h+2);
+  // Farb-Balken
   const gr=ctx.createLinearGradient(p.x-w/2,0,p.x+w/2,0);
   gr.addColorStop(0,'#00cc44');gr.addColorStop(0.5,'#ffcc00');gr.addColorStop(1,'#ff2200');
   ctx.fillStyle=gr;
-  ctx.fillRect(p.x-w/2,p.y-p.r-17,w*powerCharge,h);
+  ctx.fillRect(p.x-w/2,p.y-p.r-19,w*powerCharge,h);
+  // Label
+  ctx.fillStyle='white'; ctx.font='bold 9px Arial';
+  ctx.textAlign='center'; ctx.textBaseline='top';
+  ctx.fillText('SCHUSS',p.x,p.y-p.r-30);
+
+  // Schuss-Vorschau: Linie aufs Tor
+  const {fx,fw,gd,gh,gy}=F();
+  const gx=fx+fw+gd;
+  ctx.beginPath();
+  ctx.moveTo(ball.x,ball.y);
+  ctx.lineTo(gx,H/2);
+  ctx.strokeStyle=`rgba(255,220,0,${powerCharge*0.4})`;
+  ctx.lineWidth=2; ctx.setLineDash([6,4]);
+  ctx.stroke(); ctx.setLineDash([]);
+}
+
+function drawPassPreview(){
+  const p=players[controlledIdx];
+  if(ball.owner!==p) return;
+  const target=findBestPassTarget();
+  if(!target) return;
+  // Gestrichelte Linie zum besten Passempfänger
+  ctx.beginPath();
+  ctx.moveTo(ball.x,ball.y);
+  ctx.lineTo(target.x,target.y);
+  ctx.strokeStyle='rgba(0,200,255,0.55)';
+  ctx.lineWidth=2.5; ctx.setLineDash([7,5]);
+  ctx.stroke(); ctx.setLineDash([]);
+  // Kreis um Ziel-Spieler
+  ctx.beginPath();
+  ctx.arc(target.x,target.y,target.r+10,0,Math.PI*2);
+  ctx.strokeStyle='rgba(0,200,255,0.7)';
+  ctx.lineWidth=2.5; ctx.stroke();
+  // Label "Q=PASS"
+  ctx.fillStyle='rgba(0,200,255,0.9)';
+  ctx.font='bold 10px Arial'; ctx.textAlign='center';
+  ctx.fillText('Q=PASS',target.x,target.y-target.r-14);
 }
 
 function drawMinimap(){
@@ -951,6 +1029,7 @@ function loop(ts){
   aiPlayers.forEach(p=>drawPlayer(p,false));
   players.forEach((p,i)=>drawPlayer(p,i===controlledIdx));
   drawBall();
+  drawPassPreview();
   drawPowerBar();
   drawMinimap();
 
