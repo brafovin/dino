@@ -193,7 +193,13 @@ document.addEventListener('keydown', e=>{
   if(['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
   keys[e.code]=true;
   if(e.code==='KeyE') switchPlayer();
-  if(e.code==='Space' && !isPowerCharging){ isPowerCharging=true; powerCharge=0; }
+  if(e.code==='Space' && !isPowerCharging){
+    // Auto-switch to player with ball or nearest to ball before charging
+    const withBall = players.findIndex(p=>p===ball.owner);
+    if(withBall>=0) controlledIdx=withBall;
+    else switchPlayer();
+    isPowerCharging=true; powerCharge=0;
+  }
 });
 document.addEventListener('keyup', e=>{
   keys[e.code]=false;
@@ -205,10 +211,9 @@ document.addEventListener('keyup', e=>{
 });
 
 function switchPlayer(){
-  // Switch to nearest player to ball
+  // Auto-switch to player nearest to ball
   let best=controlledIdx, bestD=Infinity;
   players.forEach((p,i)=>{
-    if(i===controlledIdx) return;
     const d=Math.hypot(p.x-ball.x, p.y-ball.y);
     if(d<bestD){ bestD=d; best=i; }
   });
@@ -216,91 +221,176 @@ function switchPlayer(){
 }
 
 // ---- PLAYER MOVEMENT ----
+let playerFaceDir = {x:1, y:0}; // direction player is facing
+
 function moveControlled(dt){
   const p = players[controlledIdx];
   const sprint = keys['ShiftLeft']||keys['ShiftRight'];
-  const spd = sprint ? 5.5 : 3.8;
+  const spd = sprint ? 5.8 : 4.2;
   let dx=0,dy=0;
   if(keys['ArrowLeft']||keys['KeyA']) dx-=1;
   if(keys['ArrowRight']||keys['KeyD']) dx+=1;
   if(keys['ArrowUp']||keys['KeyW']) dy-=1;
   if(keys['ArrowDown']||keys['KeyS']) dy+=1;
-  if(dx||dy){ const l=Math.hypot(dx,dy); dx/=l; dy/=l; }
-  p.vx = dx*spd; p.vy = dy*spd;
+  if(dx||dy){
+    const l=Math.hypot(dx,dy); dx/=l; dy/=l;
+    playerFaceDir={x:dx,y:dy};
+  }
+  p.vx += (dx*spd - p.vx)*0.4;
+  p.vy += (dy*spd - p.vy)*0.4;
 
-  // Dribbling — carry ball
+  // Support players follow loosely
+  players.forEach((sp,i)=>{
+    if(i===controlledIdx) return;
+    // Stay in loose formation behind controlled player
+    const offX = (i===1||i===3) ? -80 : -60;
+    const offY = (i===1||i===2) ? -70 : 70;
+    const formX = p.x + offX;
+    const formY = p.y + offY;
+    const fdx = formX - sp.x, fdy = formY - sp.y;
+    const fd = Math.hypot(fdx,fdy)||1;
+    sp.vx += ((fdx/fd)*2.5 - sp.vx)*0.08;
+    sp.vy += ((fdy/fd)*2.5 - sp.vy)*0.08;
+  });
+
+  // Dribbling — carry ball with player
   if(ball.owner===p){
-    const angle = Math.atan2(dy||0, dx||0);
-    ball.x = p.x + Math.cos(angle)*18;
-    ball.y = p.y + Math.sin(angle)*18;
+    ball.x = p.x + playerFaceDir.x*20;
+    ball.y = p.y + playerFaceDir.y*20;
     ball.vx=0; ball.vy=0;
   }
 }
 
 function shoot(power){
   const p = players[controlledIdx];
+  // Can shoot if we own ball OR ball is close
   const dist = Math.hypot(ball.x-p.x, ball.y-p.y);
-  if(dist < p.r + ball.r + 25){
+  if(ball.owner===p || dist < p.r + ball.r + 30){
     ball.owner=null;
-    // Direction toward right goal
-    let tx = FX+FW + GD, ty = H/2;
-    // Add slight aim wobble based on power
-    ty += (Math.random()-0.5)*GH*0.6*(1-power);
-    const dx=tx-ball.x, dy2=ty-ball.y;
-    const d=Math.hypot(dx,dy2)||1;
-    const force = 8 + power*12;
-    ball.vx=(dx/d)*force; ball.vy=(dy2/d)*force;
+    // Shoot toward right goal (AI goal), aimed with player direction
+    const goalX = FX+FW+GD;
+    const goalY = H/2;
+    // Blend facing direction with goal direction
+    const gDx = goalX - ball.x, gDy = goalY - ball.y;
+    const gL = Math.hypot(gDx,gDy)||1;
+    const blend = 0.6; // how much goal-lock vs facing dir
+    let sx = playerFaceDir.x*(1-blend) + (gDx/gL)*blend;
+    let sy = playerFaceDir.y*(1-blend) + (gDy/gL)*blend;
+    const sl = Math.hypot(sx,sy)||1; sx/=sl; sy/=sl;
+    // Inaccuracy decreases with power
+    sx += (Math.random()-0.5)*(1-power)*0.5;
+    sy += (Math.random()-0.5)*(1-power)*0.5;
+    const force = 9 + power*13;
+    ball.vx = sx*force; ball.vy = sy*force;
   }
 }
 
 // ---- AI ----
-function updateAI(){
-  const ballOwner = ball.owner;
-  aiPlayers.forEach((p,i)=>{
-    let tx=p.x, ty=p.y;
-    const myGoalX = FX+FW+GD;
-    const oppGoalX = FX;
+let aiKickCooldown = 0;
 
-    if(ballOwner && ballOwner.team==='red'){
-      // Attack — move toward opponent goal
-      if(i===0){ // striker chases
-        tx=ball.x-25; ty=ball.y;
+function updateAI(){
+  aiKickCooldown = Math.max(0, aiKickCooldown-1);
+
+  // Formation base positions (attack right → left)
+  // 1 goalkeeper, 2 defenders, 2 attackers
+  const formations = [
+    // [x_factor, y_offset]  — relative to field
+    [0.88, 0],       // GK  stays near goal
+    [0.72, -70],     // DEF
+    [0.72,  70],     // DEF
+    [0.58, -50],     // MID/ATT
+    [0.58,  50],     // MID/ATT
+  ];
+
+  const hasBall = ball.owner && ball.owner.team==='red';
+  const bluHasBall = ball.owner && ball.owner.team==='blue';
+
+  aiPlayers.forEach((p,i)=>{
+    let tx, ty;
+
+    if(i===0){
+      // Goalkeeper: stay on goal line, track ball height
+      tx = FX+FW*0.92;
+      ty = Math.max(GY+20, Math.min(GY+GH-20, ball.y));
+    } else if(hasBall){
+      // Attack: spread out and push forward toward blue goal
+      const strikerIdx = findClosestAI();
+      if(i===strikerIdx){
+        // Ball carrier: dribble toward goal
+        tx = FX - 10;
+        ty = H/2;
       } else {
-        // Support positions
-        tx = ball.x - 60 - i*30;
-        ty = ball.y + (i%2===0?1:-1)*50;
+        // Support run
+        tx = ball.x - 80 - (i-1)*40;
+        ty = ball.y + (i%2===0?1:-1)*60;
+      }
+    } else if(bluHasBall){
+      // Press the ball carrier
+      if(i===findNearestAITo(ball.x,ball.y)){
+        tx = ball.x + 5; ty = ball.y;
+      } else {
+        // Others: hold formation
+        const [fx,fy]=formations[i];
+        tx = FX+FW*fx + (ball.x-W/2)*0.15;
+        ty = H/2 + fy + (ball.y-H/2)*0.2;
       }
     } else {
-      // Defend — mark positions
-      const defX = FX+FW*0.6 + i*20;
-      tx = Math.min(defX, ball.x+40);
-      ty = ball.y + (i%2===0?1:-1)*(40+i*15);
+      // Ball is loose — nearest chases, others hold shape
+      if(i===findNearestAITo(ball.x,ball.y)){
+        tx = ball.x; ty = ball.y;
+      } else {
+        const [fx,fy]=formations[i];
+        tx = FX+FW*fx;
+        ty = H/2 + fy;
+      }
     }
 
-    // Move toward target
+    // Smooth movement toward target
     const dx=tx-p.x, dy=ty-p.y;
     const dist=Math.hypot(dx,dy)||1;
-    const spd=3;
-    p.vx=(dx/dist)*Math.min(spd, dist*0.15);
-    p.vy=(dy/dist)*Math.min(spd, dist*0.15);
+    const spd = dist>5 ? 3.5 : dist*0.7;
+    p.vx += ((dx/dist)*spd - p.vx)*0.25;
+    p.vy += ((dy/dist)*spd - p.vy)*0.25;
 
-    // Tackle / kick ball
+    // Kick/tackle ball
     const bd=Math.hypot(ball.x-p.x, ball.y-p.y);
-    if(bd < p.r+ball.r+5 && (!ball.owner || ball.owner.team==='blue')){
-      ball.owner=null;
-      // Kick toward blue goal
-      const gx=FX-GD-ball.x, gy=H/2-ball.y;
-      const gl=Math.hypot(gx,gy)||1;
-      // Random power
-      const pw = 7+Math.random()*7;
-      // Add inaccuracy
-      ball.vx=(gx/gl)*pw+(Math.random()-0.5)*3;
-      ball.vy=(gy/gl)*pw+(Math.random()-0.5)*4;
-      p.hasBall=false;
-      // "Own" ball briefly
-      setTimeout(()=>{},0);
+    if(bd < p.r+ball.r+8 && aiKickCooldown===0){
+      if(!ball.owner || ball.owner.team==='blue'){
+        // Steal and shoot toward blue goal (left)
+        ball.owner=null;
+        const gx = FX - ball.x, gy = H/2 - ball.y;
+        const gl = Math.hypot(gx,gy)||1;
+        const pw = 8 + Math.random()*6;
+        // Aim: mix goal direction with some randomness
+        ball.vx = (gx/gl)*pw + (Math.random()-0.5)*2;
+        ball.vy = (gy/gl)*pw + (Math.random()-0.5)*3;
+        aiKickCooldown = 25; // prevent rapid re-kick
+      } else if(ball.owner===p){
+        // Dribble: carry toward blue goal
+        ball.x = p.x - 18;
+        ball.y = p.y;
+        ball.vx=0; ball.vy=0;
+      }
     }
   });
+}
+
+function findClosestAI(){
+  let best=0, bestD=Infinity;
+  aiPlayers.forEach((p,i)=>{
+    const d=Math.hypot(p.x-ball.x,p.y-ball.y);
+    if(d<bestD){ bestD=d; best=i; }
+  });
+  return best;
+}
+
+function findNearestAITo(x,y){
+  let best=0, bestD=Infinity;
+  aiPlayers.forEach((p,i)=>{
+    const d=Math.hypot(p.x-x,p.y-y);
+    if(d<bestD){ bestD=d; best=i; }
+  });
+  return best;
 }
 
 // ---- PHYSICS ----
@@ -352,16 +442,20 @@ function applyPhysics(){
       const nx=dx/dist,ny=dy/dist;
       ball.x=p.x+nx*minD; ball.y=p.y+ny*minD;
       const relV=(ball.vx-p.vx)*nx+(ball.vy-p.vy)*ny;
-      if(relV<0){ ball.vx-=relV*nx*1.2; ball.vy-=relV*ny*1.2; }
-      // Auto-pickup
-      if(ball.owner===null && Math.abs(ball.vx)<2 && Math.abs(ball.vy)<2){
-        ball.owner=p;
-      }
+      if(relV<0){ ball.vx-=relV*nx*1.3; ball.vy-=relV*ny*1.3; }
     }
   });
 
-  // Power charge
-  if(isPowerCharging) powerCharge=Math.min(1, powerCharge+0.025);
+  // Auto-switch controlled player to whoever is nearest ball
+  const cp = players[controlledIdx];
+  if(ball.owner!==cp){
+    let nearestD = Math.hypot(cp.x-ball.x, cp.y-ball.y);
+    players.forEach((p,i)=>{
+      if(i===controlledIdx) return;
+      const d=Math.hypot(p.x-ball.x,p.y-ball.y);
+      if(d < nearestD-30){ nearestD=d; controlledIdx=i; }
+    });
+  }
 }
 
 // ---- DRAW ----
