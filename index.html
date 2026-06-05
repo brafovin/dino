@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Fußball Spiel</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #1a1a2e;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      font-family: 'Arial', sans-serif;
+      color: white;
+    }
+    h1 { font-size: 2rem; margin-bottom: 10px; color: #f0c040; text-shadow: 0 0 10px #f0c040; }
+    #scoreboard {
+      display: flex;
+      gap: 40px;
+      font-size: 1.5rem;
+      margin-bottom: 10px;
+      background: rgba(255,255,255,0.1);
+      padding: 8px 30px;
+      border-radius: 30px;
+    }
+    #timer { font-size: 1.1rem; margin-bottom: 10px; color: #aaa; }
+    canvas {
+      border: 3px solid #f0c040;
+      border-radius: 8px;
+      box-shadow: 0 0 30px rgba(240,192,64,0.3);
+    }
+    #controls {
+      margin-top: 12px;
+      font-size: 0.85rem;
+      color: #aaa;
+      text-align: center;
+      line-height: 1.8;
+    }
+    #message {
+      font-size: 1.8rem;
+      font-weight: bold;
+      color: #f0c040;
+      min-height: 2.5rem;
+      margin-top: 8px;
+      text-shadow: 0 0 10px #f0c040;
+    }
+    button {
+      margin-top: 10px;
+      padding: 10px 30px;
+      font-size: 1rem;
+      background: #f0c040;
+      color: #1a1a2e;
+      border: none;
+      border-radius: 20px;
+      cursor: pointer;
+      font-weight: bold;
+    }
+    button:hover { background: #ffd060; }
+  </style>
+</head>
+<body>
+  <h1>⚽ Fußball</h1>
+  <div id="scoreboard">
+    <span>Du: <span id="scorePlayer">0</span></span>
+    <span>KI: <span id="scoreAI">0</span></span>
+  </div>
+  <div id="timer">Zeit: <span id="timeLeft">60</span>s</div>
+  <canvas id="gameCanvas" width="800" height="500"></canvas>
+  <div id="message"></div>
+  <button id="restartBtn" style="display:none" onclick="startGame()">Nochmal spielen</button>
+  <div id="controls">
+    W A S D oder Pfeiltasten — Spieler bewegen &nbsp;|&nbsp; Leertaste — Schießen
+  </div>
+
+  <script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    const W = canvas.width, H = canvas.height;
+    const GOAL_H = 120, GOAL_W = 18;
+    const GOAL_Y = (H - GOAL_H) / 2;
+
+    let player, ai, ball, scoreP, scoreAI, timeLeft, gameOver, lastTime, keys;
+
+    function startGame() {
+      document.getElementById('restartBtn').style.display = 'none';
+      document.getElementById('message').textContent = '';
+      scoreP = 0; scoreAI = 0; timeLeft = 60; gameOver = false;
+      keys = {};
+      resetPositions();
+      updateScoreboard();
+      if (lastTime) cancelAnimationFrame(lastTime);
+      lastTime = null;
+      requestAnimationFrame(loop);
+    }
+
+    function resetPositions() {
+      player = { x: 200, y: H/2, r: 18, vx: 0, vy: 0, color: '#4a9eff' };
+      ai     = { x: W - 200, y: H/2, r: 18, vx: 0, vy: 0, color: '#ff5555' };
+      ball   = { x: W/2, y: H/2, r: 12, vx: (Math.random()-0.5)*3, vy: (Math.random()-0.5)*3 };
+    }
+
+    function updateScoreboard() {
+      document.getElementById('scorePlayer').textContent = scoreP;
+      document.getElementById('scoreAI').textContent = scoreAI;
+    }
+
+    // --- Input ---
+    document.addEventListener('keydown', e => { keys[e.code] = true; e.preventDefault(); });
+    document.addEventListener('keyup',   e => { keys[e.code] = false; });
+
+    // --- Physics ---
+    const SPEED = 4, FRICTION = 0.85, BALL_FRICTION = 0.98, KICK = 10;
+
+    function movePlayer() {
+      if (keys['ArrowLeft'] || keys['KeyA'])  player.vx -= SPEED;
+      if (keys['ArrowRight']|| keys['KeyD'])  player.vx += SPEED;
+      if (keys['ArrowUp']   || keys['KeyW'])  player.vy -= SPEED;
+      if (keys['ArrowDown'] || keys['KeyS'])  player.vy += SPEED;
+      player.vx *= FRICTION; player.vy *= FRICTION;
+      player.x = Math.max(player.r, Math.min(W - player.r, player.x + player.vx));
+      player.y = Math.max(player.r, Math.min(H - player.r, player.y + player.vy));
+
+      // Kick
+      if (keys['Space']) {
+        const dx = ball.x - player.x, dy = ball.y - player.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist < player.r + ball.r + 20) {
+          ball.vx += (dx / dist) * KICK;
+          ball.vy += (dy / dist) * KICK;
+        }
+      }
+    }
+
+    function moveAI() {
+      // Chase ball, try to kick toward player's goal (left goal)
+      const targetX = ball.x - 30;
+      const targetY = ball.y;
+      const dx = targetX - ai.x, dy = targetY - ai.y;
+      const dist = Math.hypot(dx, dy) || 1;
+      const spd = 3.2;
+      ai.vx = (dx / dist) * spd;
+      ai.vy = (dy / dist) * spd;
+      ai.x = Math.max(ai.r, Math.min(W - ai.r, ai.x + ai.vx));
+      ai.y = Math.max(ai.r, Math.min(H - ai.r, ai.y + ai.vy));
+
+      // Kick
+      const bdx = ball.x - ai.x, bdy = ball.y - ai.y;
+      const bdist = Math.hypot(bdx, bdy);
+      if (bdist < ai.r + ball.r + 5) {
+        // Kick toward left goal
+        const gx = 0 - ball.x, gy = H/2 - ball.y;
+        const gd = Math.hypot(gx, gy) || 1;
+        ball.vx += (gx / gd) * 8;
+        ball.vy += (gy / gd) * 8;
+      }
+    }
+
+    function moveBall() {
+      ball.x += ball.vx; ball.y += ball.vy;
+      ball.vx *= BALL_FRICTION; ball.vy *= BALL_FRICTION;
+
+      // Wall bounce top/bottom
+      if (ball.y - ball.r < 0)  { ball.y = ball.r; ball.vy *= -0.8; }
+      if (ball.y + ball.r > H)  { ball.y = H - ball.r; ball.vy *= -0.8; }
+
+      // Wall bounce left/right (only outside goal)
+      const inGoalY = ball.y > GOAL_Y && ball.y < GOAL_Y + GOAL_H;
+      if (ball.x - ball.r < GOAL_W) {
+        if (!inGoalY) { ball.x = GOAL_W + ball.r; ball.vx *= -0.8; }
+      }
+      if (ball.x + ball.r > W - GOAL_W) {
+        if (!inGoalY) { ball.x = W - GOAL_W - ball.r; ball.vx *= -0.8; }
+      }
+
+      // Goal detection
+      if (ball.x - ball.r < 0 && inGoalY) {
+        scoreAI++; updateScoreboard(); flashMessage('KI trifft! 😬'); resetPositions();
+      }
+      if (ball.x + ball.r > W && inGoalY) {
+        scoreP++; updateScoreboard(); flashMessage('Tor! 🎉'); resetPositions();
+      }
+
+      // Ball-player collision
+      circleCollide(ball, player);
+      circleCollide(ball, ai);
+    }
+
+    function circleCollide(b, p) {
+      const dx = b.x - p.x, dy = b.y - p.y;
+      const dist = Math.hypot(dx, dy);
+      const minD = b.r + p.r;
+      if (dist < minD && dist > 0) {
+        const nx = dx / dist, ny = dy / dist;
+        const overlap = minD - dist;
+        b.x += nx * overlap; b.y += ny * overlap;
+        const relV = (b.vx - p.vx) * nx + (b.vy - p.vy) * ny;
+        if (relV < 0) {
+          b.vx -= relV * nx; b.vy -= relV * ny;
+        }
+      }
+    }
+
+    let flashTimeout = null;
+    function flashMessage(msg) {
+      document.getElementById('message').textContent = msg;
+      if (flashTimeout) clearTimeout(flashTimeout);
+      flashTimeout = setTimeout(() => document.getElementById('message').textContent = '', 1500);
+    }
+
+    // --- Timer ---
+    let elapsed = 0;
+    function tick(dt) {
+      elapsed += dt;
+      if (elapsed >= 1000) {
+        elapsed -= 1000;
+        timeLeft--;
+        document.getElementById('timeLeft').textContent = timeLeft;
+        if (timeLeft <= 0) endGame();
+      }
+    }
+
+    function endGame() {
+      gameOver = true;
+      let msg;
+      if (scoreP > scoreAI) msg = '🏆 Du gewinnst!';
+      else if (scoreAI > scoreP) msg = '😢 KI gewinnt!';
+      else msg = '🤝 Unentschieden!';
+      document.getElementById('message').textContent = msg;
+      document.getElementById('restartBtn').style.display = 'inline-block';
+    }
+
+    // --- Draw ---
+    function drawField() {
+      // Grass
+      ctx.fillStyle = '#2d8a4e';
+      ctx.fillRect(0, 0, W, H);
+
+      // Field lines
+      ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+      ctx.lineWidth = 2;
+
+      // Border
+      ctx.strokeRect(10, 10, W-20, H-20);
+
+      // Center line
+      ctx.beginPath(); ctx.moveTo(W/2, 10); ctx.lineTo(W/2, H-10); ctx.stroke();
+
+      // Center circle
+      ctx.beginPath(); ctx.arc(W/2, H/2, 70, 0, Math.PI*2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(W/2, H/2, 4, 0, Math.PI*2);
+      ctx.fillStyle = 'rgba(255,255,255,0.35)'; ctx.fill();
+
+      // Goals
+      ctx.fillStyle = 'rgba(255,255,255,0.2)';
+      ctx.fillRect(0, GOAL_Y, GOAL_W, GOAL_H);
+      ctx.fillRect(W - GOAL_W, GOAL_Y, GOAL_W, GOAL_H);
+      ctx.strokeStyle = 'white'; ctx.lineWidth = 3;
+      ctx.strokeRect(0, GOAL_Y, GOAL_W, GOAL_H);
+      ctx.strokeRect(W - GOAL_W, GOAL_Y, GOAL_W, GOAL_H);
+    }
+
+    function drawCircle(obj, label) {
+      ctx.beginPath();
+      ctx.arc(obj.x, obj.y, obj.r, 0, Math.PI*2);
+      ctx.fillStyle = obj.color;
+      ctx.fill();
+      ctx.strokeStyle = 'white'; ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.fillStyle = 'white';
+      ctx.font = 'bold 11px Arial';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(label, obj.x, obj.y);
+    }
+
+    function drawBall() {
+      ctx.beginPath();
+      ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI*2);
+      ctx.fillStyle = 'white';
+      ctx.fill();
+      ctx.strokeStyle = '#222'; ctx.lineWidth = 1.5;
+      ctx.stroke();
+      // Pentagons pattern hint
+      ctx.fillStyle = '#333';
+      ctx.beginPath(); ctx.arc(ball.x, ball.y, ball.r * 0.35, 0, Math.PI*2); ctx.fill();
+    }
+
+    // --- Loop ---
+    let prevTime = null;
+    function loop(ts) {
+      if (gameOver) return;
+      if (!prevTime) prevTime = ts;
+      const dt = ts - prevTime; prevTime = ts;
+
+      movePlayer();
+      moveAI();
+      moveBall();
+      tick(dt);
+
+      drawField();
+      drawCircle(player, 'Du');
+      drawCircle(ai, 'KI');
+      drawBall();
+
+      requestAnimationFrame(loop);
+    }
+
+    startGame();
+  </script>
+</body>
+</html>
